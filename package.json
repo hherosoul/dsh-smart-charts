@@ -14,10 +14,11 @@
     "build": "tsdown src/index.ts --out-dir lib",
     "prepare": "tsdown src/index.ts --out-dir lib"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@deepseek-ai/dsh-skill-filesystem": "^0.1.0-rc.6"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-skill-filesystem": "^0.1.0-rc.6",
     "@types/node": "latest",
     "tsdown": "latest",
     "typescript": "latest"
