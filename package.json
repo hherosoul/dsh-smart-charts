@@ -1,0 +1,25 @@
+{
+  "name": "dsh-smart-charts",
+  "version": "6.0.0",
+  "description": "Smart Charts skill for DeepSeek Harness — generates interactive ECharts visualizations from CSV/Excel/JSON data.",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "types": "lib/index.d.mts",
+  "files": ["lib", "skills", "cordis.patch.yml", "LICENSE", "README.md"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "keywords": ["deepseek-harness", "dsh-plugin", "cordis", "skill", "echarts", "charts", "visualization"],
+  "license": "MIT",
+  "engines": { "node": ">=20.19.0" },
+  "scripts": {
+    "build": "tsdown src/index.ts --out-dir lib",
+    "prepare": "tsdown src/index.ts --out-dir lib"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-skill-filesystem": "^0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsdown": "latest",
+    "typescript": "latest"
+  }
+}

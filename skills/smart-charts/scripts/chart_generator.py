@@ -1,0 +1,399 @@
+"""图表生成器。基于 DataFrame 生成独立的 ECharts 交互式 HTML 文件。"""
+
+import sys
+import re
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple
+from enum import Enum
+
+if __name__ == '__main__' and __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.exceptions import ChartError, ErrorCode, SmartChartsError
+else:
+    from .exceptions import ChartError, ErrorCode, SmartChartsError
+
+from .template import (
+    HTMLTemplateMixin,
+    TOOLTIP_FORMATTER_AXIS,
+    BUBBLE_SYMBOLSIZE_PLACEHOLDER,
+    BUBBLE_TOOLTIP_PLACEHOLDER,
+    ITEM_TOOLTIP_PLACEHOLDER,
+    WATERFALL_TOOLTIP_PLACEHOLDER,
+)
+from .renderers import ChartRenderersMixin
+
+
+class ChartType(Enum):
+    LINE = 'line'
+    BAR = 'bar'
+    PIE = 'pie'
+    SCATTER = 'scatter'
+    AREA = 'area'
+    RADAR = 'radar'
+    HEATMAP = 'heatmap'
+    TREEMAP = 'treemap'
+    GRAPH = 'graph'
+    BOXPLOT = 'boxplot'
+    WATERFALL = 'waterfall'
+    GAUGE = 'gauge'
+    SANKEY = 'sankey'
+    FUNNEL = 'funnel'
+    SUNBURST = 'sunburst'
+    WORDCLOUD = 'wordcloud'
+    HISTOGRAM = 'histogram'
+    STACKED_BAR = 'stacked_bar'
+    BUBBLE = 'bubble'
+    PARETO = 'pareto'
+    COMBO = 'combo'
+
+
+class ChartGenerator(ChartRenderersMixin, HTMLTemplateMixin):
+
+    # 数据点超过此阈值时自动启用 dataZoom（slider + inside），允许用户在图内拖动/缩放查看
+    DATAZOOM_THRESHOLD = 15
+    # 单个数据点占用的最小宽度（px），用于计算 .chart 容器的 min-width 兜底
+    MIN_PX_PER_POINT = 18
+    # 无"系列"概念的图表类型：这些图的 series name 仅为图表类型名或数据项，
+    # 重命名面板不渲染"系列"分组（仍渲染有意义的"轴"分组，若有）。
+    _NO_SERIES_CHART_TYPES = {
+        'pie', 'heatmap', 'treemap', 'graph', 'gauge', 'sankey',
+        'funnel', 'sunburst', 'wordcloud', 'histogram', 'boxplot', 'bubble',
+    }
+
+    # 占位符类属性（从 template 模块导入，供 mixin 方法通过 self 访问）
+    _TOOLTIP_FORMATTER_AXIS = TOOLTIP_FORMATTER_AXIS
+    _BUBBLE_SYMBOLSIZE_PLACEHOLDER = BUBBLE_SYMBOLSIZE_PLACEHOLDER
+    _BUBBLE_TOOLTIP_PLACEHOLDER = BUBBLE_TOOLTIP_PLACEHOLDER
+    _ITEM_TOOLTIP_PLACEHOLDER = ITEM_TOOLTIP_PLACEHOLDER
+    _WATERFALL_TOOLTIP_PLACEHOLDER = WATERFALL_TOOLTIP_PLACEHOLDER
+
+    # 身份列自动探测的列名提示词（小写匹配，命中者优先）
+    _LABEL_HINTS = ('姓名', '名称', '名字', 'name', 'label', 'title', 'id')
+
+    # 图表内文本字典：series name / tooltip / HTML 按钮 / footer 等。
+    # 默认跟随数据语言（zh/en）；用户可通过 lang 参数强制指定。
+    _TEXTS = {
+        'zh': {
+            'default_title': '数据图表',
+            'series_radar': '雷达图',
+            'series_heatmap': '热力图',
+            'series_treemap': '树图',
+            'series_graph': '关系图',
+            'series_boxplot': '箱线图',
+            'series_outliers': '异常值',
+            'series_gauge': '仪表盘',
+            'series_sankey': '桑基图',
+            'series_funnel': '漏斗图',
+            'series_sunburst': '旭日图',
+            'series_wordcloud': '词云',
+            'series_bubble': '气泡图',
+            'series_pareto': '累计百分比',
+            'series_uncategorized': '未分类',
+            'axis_frequency': '频数',
+            'rename_hint': '点击名称可修改；轴名还可在图上直接拖拽调整位置（保存图片时均生效）',
+            'rename_group_series': '系列',
+            'rename_group_axis': '轴',
+            'tooltip_no_data': '无数据',
+            'btn_save': '保存图片',
+            'btn_fullscreen': '全屏',
+            'scroll_hint': '数据点较多，可拖动图内滑块、横向滚动或点击全屏查看完整内容',
+            'edit_hint': '双击标题可编辑',
+            'title_updated': '标题已更新，保存图片时将使用新标题',
+            'footer': '由 Smart Charts 生成',
+            'comment_download_name': '保存图片时使用的文件名，随标题内联编辑动态更新',
+            'comment_title_edit': '标题内联编辑：双击标题可直接修改，Enter 确认，Escape 取消',
+            'comment_title_sync': '编辑后同步更新 ECharts 图表标题和保存图片的文件名',
+        },
+        'en': {
+            'default_title': 'Data Chart',
+            'series_radar': 'Radar',
+            'series_heatmap': 'Heatmap',
+            'series_treemap': 'Treemap',
+            'series_graph': 'Graph',
+            'series_boxplot': 'Boxplot',
+            'series_outliers': 'Outliers',
+            'series_gauge': 'Gauge',
+            'series_sankey': 'Sankey',
+            'series_funnel': 'Funnel',
+            'series_sunburst': 'Sunburst',
+            'series_wordcloud': 'Word Cloud',
+            'series_bubble': 'Bubble',
+            'series_pareto': 'Cumulative %',
+            'series_uncategorized': 'Uncategorized',
+            'axis_frequency': 'Frequency',
+            'rename_hint': 'Click a name to rename; axis names can also be dragged on the chart (applied when saving image)',
+            'rename_group_series': 'Series',
+            'rename_group_axis': 'Axis',
+            'tooltip_no_data': 'No data',
+            'btn_save': 'Save Image',
+            'btn_fullscreen': 'Fullscreen',
+            'scroll_hint': 'Many data points: drag the slider, scroll horizontally, or click fullscreen to view all',
+            'edit_hint': 'Double-click title to edit',
+            'title_updated': 'Title updated, new title will be used when saving image',
+            'footer': 'Generated by Smart Charts',
+            'comment_download_name': 'Download filename for saving images, updates with inline title edit',
+            'comment_title_edit': 'Inline title edit: double-click to edit, Enter to confirm, Escape to cancel',
+            'comment_title_sync': 'After edit, sync ECharts chart title and save-image filename',
+        },
+    }
+
+    # 中文字符范围（CJK 统一表意文字）
+    _CJK_RE = re.compile(r'[\u4e00-\u9fff]')
+
+    def __init__(self, output_dir: str = './smart_charts_output'):
+        self.output_dir = Path(output_dir)
+        self._dir_ready = False
+        # bubble symbolSize JS 函数：由 _bubble 设置，_save_html 消费后重置
+        self._bubble_symbolsize_js: Optional[str] = None
+        # bubble tooltip formatter JS 函数：同上
+        self._bubble_tooltip_js: Optional[str] = None
+        # 通用 item tooltip JS 函数（scatter/boxplot 离群点/heatmap）：同上
+        self._item_tooltip_js: Optional[str] = None
+        # waterfall tooltip JS 函数：同上
+        self._waterfall_tooltip_js: Optional[str] = None
+        # 身份列 / 着色列：由 generate_chart 设置，渲染器消费
+        self._label_col: Optional[str] = None
+        self._color_by: Optional[str] = None
+
+    def _ensure_output_dir(self):
+        if not self._dir_ready:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self._dir_ready = True
+
+    def _detect_language(self, df: pd.DataFrame) -> str:
+        """检测 DataFrame 的语言：检查列名和前若干行字符串值中的中文字符占比。
+
+        中文字符占字母类字符的比例 > 5% 即判定为中文，否则为英文。
+        """
+        chars = ''.join(str(c) for c in df.columns)
+        for col in df.columns:
+            if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+                chars += ''.join(str(v) for v in df[col].head(20).tolist() if v is not None)
+        alpha_count = sum(1 for c in chars if c.isalpha())
+        if alpha_count == 0:
+            return 'en'
+        chinese_count = sum(1 for c in chars if self._CJK_RE.match(c))
+        return 'zh' if chinese_count / alpha_count > 0.05 else 'en'
+
+    def _get_texts(self, lang: Optional[str], df: pd.DataFrame) -> Dict[str, str]:
+        """根据 lang 参数或数据自动检测结果返回对应语言的文本字典。"""
+        if lang not in self._TEXTS:
+            lang = self._detect_language(df)
+        return self._TEXTS[lang]
+
+    def generate_chart(
+        self,
+        df: pd.DataFrame,
+        chart_type: str,
+        title: Optional[str] = None,
+        x_axis: Optional[str] = None,
+        y_axis: Optional[List[str]] = None,
+        transform_code: Optional[str] = None,
+        width: int = 900,
+        height: int = 560,
+        lang: Optional[str] = None,
+        label_col: Optional[str] = None,
+        color_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """生成单个图表，返回统一结构 {'chart': {'success', 'html_path'/'error', ...}}。
+
+        lang: 'zh' / 'en' 强制指定图表文本语言；None 时按数据自动检测。
+        title: None 时使用 lang 对应的默认标题。
+        label_col: 身份列（如姓名），其值进数据点 name 和 tooltip（scatter/bubble/boxplot）。
+            None 时按列名启发式自动探测（命中时记入返回值的 assumptions 字段）。
+        color_by: 着色列（scatter/bubble）。数值列 → visualMap 连续着色；类别列 → 拆 series 分色。
+        失败时不抛异常，返回 success=False + error 结构，便于智能体程序化处理。
+        """
+        try:
+            if df.empty:
+                raise ChartError("数据为空", ErrorCode.DATA_EMPTY)
+            try:
+                ct = ChartType(chart_type)
+            except ValueError:
+                supported = [t.value for t in ChartType]
+                raise ChartError(
+                    f"不支持的图表类型: {chart_type}，支持: {supported}",
+                    ErrorCode.CHART_TYPE_UNSUPPORTED,
+                    details={
+                        'given': chart_type,
+                        'supported': supported,
+                        'suggestion': '参考 SKILL.md 图表类型表',
+                    },
+                )
+
+            gen = getattr(self, f'_{ct.value}', None)
+            if gen is None:
+                raise ChartError(
+                    f"暂不支持该图表类型: {chart_type}",
+                    ErrorCode.CHART_TYPE_UNSUPPORTED,
+                    details={'given': chart_type},
+                )
+
+            if transform_code:
+                if __package__ is None:
+                    from scripts.data_transformer import DataTransformer
+                else:
+                    from .data_transformer import DataTransformer
+                df = DataTransformer().transform(df, transform_code)
+
+            texts = self._get_texts(lang, df)
+            if title is None:
+                title = texts['default_title']
+
+            x_axis, y_axis = self._prepare_axes(df, chart_type, x_axis, y_axis)
+
+            # label_col / color_by 校验与自动探测
+            assumptions = []
+            for param, col in (('label_col', label_col), ('color_by', color_by)):
+                if col is not None and col not in df.columns:
+                    raise ChartError(
+                        f"{param} 字段不存在: {col}",
+                        ErrorCode.CHART_CONFIG_ERROR,
+                        details={
+                            'given': col,
+                            'available': list(df.columns),
+                            'suggestion': '从 available 列中选择一个已存在的列',
+                        },
+                    )
+            if label_col is None and chart_type in ('scatter', 'bubble', 'boxplot'):
+                label_col = self._detect_label_col(df, x_axis, y_axis)
+                if label_col is not None:
+                    assumptions.append(f'label 列自动选择: {label_col}（可用 --label-col 覆盖或置空）')
+            self._label_col, self._color_by = label_col, color_by
+
+            option = gen(df, x_axis, y_axis, title, texts)
+            data_points = self._estimate_data_points(df, chart_type, x_axis, y_axis)
+            html_path = self._save_html(option, title, width, height, chart_type, data_points, texts)
+            chart_result = {
+                'success': True,
+                'html_path': str(html_path),
+                'chart_type': chart_type,
+                'title': title,
+            }
+            if assumptions:
+                chart_result['assumptions'] = assumptions
+            return {'chart': chart_result}
+        except SmartChartsError as e:
+            return {
+                'chart': {
+                    'success': False,
+                    'error': e.to_dict(),
+                    'chart_type': chart_type,
+                    'title': title or '',
+                }
+            }
+        except Exception as e:
+            return {
+                'chart': {
+                    'success': False,
+                    'error': {'error': str(e), 'code': ErrorCode.UNKNOWN_ERROR.value, 'code_name': ErrorCode.UNKNOWN_ERROR.name},
+                    'chart_type': chart_type,
+                    'title': title or '',
+                }
+            }
+
+    def generate_multi_charts(
+        self,
+        df: pd.DataFrame,
+        chart_configs: List[Dict[str, Any]],
+        width: int = 900,
+        height: int = 560,
+        lang: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """批量生成多个图表，返回 {'charts': [{'success', 'html_path'/'error', ...}]}。
+
+        每项结构与 generate_chart 的 {'chart': {...}} 内部一致，便于智能体统一解析。
+        """
+        results = []
+        for cfg in chart_configs:
+            r = self.generate_chart(
+                df=df,
+                chart_type=cfg.get('type', 'bar'),
+                title=cfg.get('title') or None,
+                x_axis=cfg.get('x_axis'),
+                y_axis=cfg.get('y_axis'),
+                transform_code=cfg.get('transform_code'),
+                width=cfg.get('width', width),
+                height=cfg.get('height', height),
+                lang=lang,
+                label_col=cfg.get('label_col'),
+                color_by=cfg.get('color_by'),
+            )
+            chart_result = r['chart']
+            chart_result['config'] = cfg
+            results.append(chart_result)
+        return {'charts': results}
+
+    # ---- 轴自动检测 ----
+
+    def _prepare_axes(self, df, chart_type, x_axis, y_axis) -> Tuple[str, List[str]]:
+        if x_axis is None:
+            date_cols = df.select_dtypes(include=['datetime', 'datetime64']).columns
+            cat_cols = df.select_dtypes(include=['object', 'string', 'category']).columns
+            x_axis = date_cols[0] if len(date_cols) > 0 else (cat_cols[0] if len(cat_cols) > 0 else df.columns[0])
+
+        if y_axis is None:
+            avail = [c for c in df.columns if c != x_axis]
+            nums = df[avail].select_dtypes(include=[np.number]).columns.tolist()
+            y_axis = nums[:5] if nums else avail[:3]
+        elif isinstance(y_axis, str):
+            y_axis = [y_axis]
+
+        if x_axis not in df.columns:
+            raise ChartError(
+                f"X轴字段不存在: {x_axis}",
+                ErrorCode.CHART_CONFIG_ERROR,
+                details={
+                    'given': x_axis,
+                    'available': list(df.columns),
+                    'suggestion': '从 available 列中选择一个已存在的列，或提供 transform_code 生成所需列',
+                },
+            )
+        for y in y_axis:
+            if y not in df.columns:
+                raise ChartError(
+                    f"Y轴字段不存在: {y}",
+                    ErrorCode.CHART_CONFIG_ERROR,
+                    details={
+                        'given': y,
+                        'available': list(df.columns),
+                        'suggestion': '从 available 列中选择一个已存在的列，或提供 transform_code 生成所需列',
+                    },
+                )
+        return x_axis, y_axis
+
+    def _detect_label_col(self, df: pd.DataFrame, x_axis: str, y_axis: List[str]) -> Optional[str]:
+        """身份列自动探测：在未被 x/y 占用的字符串列中，按列名提示词（姓名/name/id 等）选最可能的一列。
+
+        无提示词命中时取第一个候选列；无候选返回 None（图表退化为无身份标识）。
+        """
+        used = {x_axis, *y_axis}
+        cands = [
+            c for c in df.columns if c not in used
+            and (df[c].dtype == 'object' or pd.api.types.is_string_dtype(df[c]))
+        ]
+        if not cands:
+            return None
+        for c in cands:
+            cl = str(c).lower()
+            if any(h in cl for h in self._LABEL_HINTS):
+                return c
+        return cands[0]
+
+    # ---- HTML 输出 ----
+
+    def _estimate_data_points(self, df: pd.DataFrame, chart_type: str, x_axis: str, y_axis: List[str]) -> int:
+        """估算图表 X 轴类别数量，用于决定 HTML 容器是否需要横向滚动兜底。
+
+        只有 X 轴为类别轴且数据点可能过多的图表（bar/line/area 等）才返回非零值；
+        heatmap 是网格布局，每个单元格远窄于柱状图柱子，不需要横向滚动；
+        scatter（数值轴）/boxplot（列名轴）/pie/treemap 等也不需要，返回 0。
+        """
+        try:
+            if chart_type in ('bar', 'line', 'area', 'stacked_bar', 'combo', 'pareto'):
+                return len(df)
+        except Exception:
+            pass
+        return 0
