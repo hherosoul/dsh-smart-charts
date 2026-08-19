@@ -92,6 +92,7 @@ pip install -r requirements.txt --require-hashes
 本 skill 同时发布在**腾讯 SkillHub**（WorkBuddy 生态）：
 
 - 腾讯 SkillHub：<https://skillhub.cn/skills>（搜索 `smart-charts`）
+- 截至 2026-08-19：SkillHub 累计下载 **6.8 万次**，在**数据分析**分类中**排名第一**
 - 在 SkillHub 上的使用方式：上传 CSV / Excel / JSON 数据文件 → 生成交互式图表 HTML，可保存为图片。
 
 ## 目录结构
