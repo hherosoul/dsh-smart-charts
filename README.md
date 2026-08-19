@@ -87,6 +87,13 @@ pip install -r requirements.txt --require-hashes
 
 依赖（`==` 锁定 + SHA256）：`pandas` `numpy` `openpyxl` `xlrd`。
 
+## 示例数据
+
+仓库自带示例数据，可快速体验：
+
+- [examples/sales_data.csv](examples/sales_data.csv) — 2026 年第一季度销售数据（18 行 × 5 列）
+- [examples/README.md](examples/README.md) — 使用说明与示例提示词
+
 ## 相关平台 / 生态
 
 本 skill 同时发布在**腾讯 SkillHub**（WorkBuddy 生态）：
