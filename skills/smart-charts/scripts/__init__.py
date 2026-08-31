@@ -1,10 +1,12 @@
 """Smart Charts - 智能图表生成与数据分析"""
 
-__version__ = '5.1.0'
+# 版本号唯一权威来源：SKILL.md frontmatter 的 version 字段必须与本值一致
+# （由 ux_regression_check.py 强制校验，两处不一致即视为回归）。
+__version__ = '8.0.1'
 
 from .chart_generator import ChartGenerator, ChartType
 from .data_parser import DataParser
-from .data_transformer import DataTransformer, CHART_INPUT_SPEC, CodeValidationError
+from .data_transformer import DataTransformer, CodeValidationError
 from .exceptions import (
     SmartChartsError,
     FileError,
@@ -19,7 +21,6 @@ __all__ = [
     'ChartType',
     'DataParser',
     'DataTransformer',
-    'CHART_INPUT_SPEC',
     'CodeValidationError',
     'SmartChartsError',
     'FileError',

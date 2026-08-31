@@ -6,11 +6,14 @@ DeepSeek Harness 的 **Smart Charts** skill 插件。
 
 ## 功能特性
 
-- **21 种图表类型**：`line` `bar` `area` `pie` `scatter` `radar` `heatmap` `treemap` `graph` `boxplot` `waterfall` `gauge` `sankey` `funnel` `sunburst` `wordcloud` `histogram` `stacked_bar` `bubble` `pareto` `combo`，覆盖趋势、对比、占比、分布、相关、流向、转化、词频等场景。
+- **26 种图表类型**：`line` `bar` `area` `pie` `scatter` `radar` `heatmap` `treemap` `graph` `boxplot` `waterfall` `gauge` `sankey` `funnel` `sunburst` `wordcloud` `histogram` `stacked_bar` `bubble` `pareto` `combo` `venn` `mindmap` `orgchart` `liquid` `spreadsheet`，覆盖趋势、对比、占比、分布、相关、流向、转化、词频、集合交叠、层级结构等场景。
+- **3 套主题预设**：`default` / `classic` / `dark`，按交付场景一键切换视觉风格。
 - **多格式解析**：CSV（逗号）/ TSV（制表）/ TXT（自动探测分隔符 `,`/`\t`/`;`/`|`）、Excel（`.xlsx`/`.xls`）、JSON（数组 + 单层嵌套）；自动检测 UTF-8 / GBK / GB2312 编码。
 - **多文件自动合并**：最多约 10 个文件；列完全相同 → 纵向拼接（注入 `source_file` 来源列），≥50% 列重叠 → 横向关联，无共同结构 → 明确报错建议分开分析。
 - **LLM 数据转换**：`--transform-code` 用 pandas 代码完成列重命名 / 重塑 / 聚合等清洗，由模型按数据语义生成。
 - **三层安全沙箱**：transform 代码经过「黑名单 + AST 白名单 + 安全 builtins」三重校验；违规返回带 `suggestion` 的结构化错误，模型可机械修正重试，无需用户介入。
+- **多图批量**：`--charts-file` 用 JSON 声明多张图（每图可带独立 transform），一次生成整组图表。
+- **统计摘要 + 解读注入**：成功时输出 `plot_stats`（绘图数据完整统计摘要）；`--dry-run` 只算统计不渲染，`--annotation` 把 LLM 写的文字解读注入 HTML「图表说明」区块。
 - **完全离线**：ECharts JS 打包在 `assets/` 并内联进每个 HTML，无 CDN、无外部依赖。
 - **交互式输出**：悬停查数、`dataZoom` 缩放、超阈值自动横向滚动、标题双击内联编辑、图表可保存为图片。
 - **结构化错误**：`SmartChartsError` 统一输出 JSON（`code` / `code_name` / `suggestion`），失败可被 agent 稳定解析并重试。
@@ -63,7 +66,7 @@ dsh plugin --profile web add github:hherosoul/dsh-smart-charts
 ### 渠道 C：本地 tarball
 
 ```bash
-dsh plugin --profile web add ./dsh-smart-charts-6.0.0.tgz
+dsh plugin --profile web add ./dsh-smart-charts-8.0.1.tgz
 ```
 
 ## 验证
@@ -79,13 +82,13 @@ dsh --profile web --dump-config
 1. 把数据文件放进 workspace 目录，启动 DSH 会话。
 2. 对 agent 说「分析 `sales.csv` 并生成柱状图」，或输入 `/smart-charts` 直接触发。
 3. agent 会按 `SKILL.md` 流程：解析数据 → 推荐图表类型 → 生成 ECharts HTML 到 workspace 的 `output/`。
-4. 首次运行前，agent 会先安装 Python 依赖（已做 SHA256 校验）：
+4. 首次运行前，agent 会先安装 Python 依赖（需 Python 3.11+）：
 
 ```bash
-pip install -r requirements.txt --require-hashes
+pip install -r requirements.txt
 ```
 
-依赖（`==` 锁定 + SHA256）：`pandas` `numpy` `openpyxl` `xlrd`。
+依赖（`==` 精确锁定）：`pandas` `numpy` `openpyxl` `xlrd`。
 
 ## 示例数据
 

@@ -7,43 +7,16 @@
 """
 
 import ast
+import contextlib
+import re
+import signal
+import sys
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Set
 
-if __name__ == '__main__' and __package__ is None:
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from scripts.exceptions import TransformError, ErrorCode
-else:
-    from .exceptions import TransformError, ErrorCode
+from .exceptions import TransformError, ErrorCode
 
-
-# 每种图表类型对 DataFrame 的输入格式要求
-CHART_INPUT_SPEC: Dict[str, str] = {
-    'line':      "1个分类/时间列(x轴) + 1~N个数值列(y轴系列)",
-    'bar':       "1个分类列(x轴) + 1~N个数值列(y轴系列)",
-    'area':      "1个分类/时间列(x轴) + 1~N个数值列(y轴系列)",
-    'pie':       "1个name列(分类) + 1个value列(数值)",
-    'scatter':   "2个数值列(x,y) 或 1个分类列+1个数值列",
-    'radar':     "1个indicator列(分类) + N个数值列(各维度)",
-    'heatmap':   "2个分类列 + 1个数值列，或数值矩阵",
-    'treemap':   "1个name列 + 1个value列",
-    'graph':     "source + target列(+可选value列)",
-    'boxplot':   "N个数值列",
-    'waterfall': "1个分类列 + 1个数值列(增量值)",
-    'gauge':     "1个数值列(取均值)",
-    'sankey':    "source + target + value列",
-    'funnel':    "1个name列 + 1个value列",
-    'sunburst':  "1个name列 + 1个value列",
-    'wordcloud': "1个name列 + 1个value列",
-    'histogram':  "1个数值列",
-    'stacked_bar': "1个分类列(x轴) + 1~N个数值列(y轴系列)",
-    'bubble':    "2个数值列(y值+size值) + 1个数值列(x值)",
-    'pareto':    "1个分类列 + 1个数值列",
-    'combo':     "1个分类列(x轴) + 1个bar列 + 1~N个line列",
-}
 
 # ── 关键字黑名单 ──────────────────────────────────────────────
 # 阻止包含这些关键字的代码执行，防止文件操作、网络访问、系统命令等危险行为
@@ -59,7 +32,7 @@ KEYWORD_BLACKLIST: List[str] = [
     'socket', 'requests', 'urllib', 'http.', 'subprocess',
     # 系统命令
     'os.system', 'os.popen', 'os.exec', 'os.spawn',
-    'subprocess.', 'sys.exit', 'sys.argv',
+    'sys.exit', 'sys.argv',
     # 反射与内部属性
     '__class__', '__bases__', '__subclasses__', '__globals__',
     '__code__', '__closure__', '__dict__', '__mro__',
@@ -69,6 +42,41 @@ KEYWORD_BLACKLIST: List[str] = [
     # 装饰器绕过
     '@property', '@classmethod', '@staticmethod',
 ]
+
+# ── 危险属性名黑名单 ──────────────────────────────────────────
+# 关键字黑名单只拦裸名（open/import），拦不住模块自带的文件/网络 I/O 方法。
+# 这里通过 AST Attribute 精确匹配属性名，拦截 pd.read_csv / np.load / to_pickle 等
+# 绕过手法。只匹配属性名、不匹配字符串字面量（字符串是 Constant 节点），因此
+# 列名恰为 read_csv 时（如 df['read_csv']）不会误伤。
+DANGEROUS_ATTRIBUTES: Set[str] = {
+    # pandas 文件 I/O（读）
+    'read_csv', 'read_excel', 'read_json', 'read_pickle', 'read_hdf', 'read_html',
+    'read_sql', 'read_sql_query', 'read_sql_table', 'read_table', 'read_fwf',
+    'read_clipboard', 'read_feather', 'read_parquet', 'read_orc', 'read_sas',
+    'read_spss', 'read_stata', 'read_gbq',
+    # pandas 文件 I/O（写）
+    'to_csv', 'to_excel', 'to_json', 'to_pickle', 'to_hdf', 'to_sql',
+    'to_feather', 'to_parquet', 'to_stata', 'to_gbq',
+    # pandas 文件句柄 / 引擎
+    'hdfstore', 'excelwriter', 'excelfile',
+    # numpy 文件 I/O
+    'load', 'save', 'savez', 'savez_compressed', 'loadtxt', 'savetxt',
+    'fromfile', 'tofile', 'genfromtxt', 'fromregex', 'frombuffer', 'fromstring',
+    'memmap',
+}
+
+
+class _DangerousAttributeVisitor(ast.NodeVisitor):
+    """遍历 AST，命中 DANGEROUS_ATTRIBUTES 中的属性访问即记录违规。"""
+
+    def __init__(self):
+        self.violations: List[str] = []
+
+    def visit_Attribute(self, node):
+        if node.attr.lower() in DANGEROUS_ATTRIBUTES:
+            self.violations.append(f"不允许的属性访问: .{node.attr}")
+        self.generic_visit(node)
+
 
 # ── AST 白名单 ────────────────────────────────────────────────
 # 仅允许这些 AST 节点类型出现在转换代码中
@@ -82,6 +90,8 @@ AST_WHITELIST: Set[type] = {
     ast.UnaryOp, ast.BinOp, ast.BoolOp, ast.Compare,
     ast.UAdd, ast.USub, ast.Not, ast.Invert,
     ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    # 位运算符：pandas 布尔向量运算（& / | / ^）必需，无系统调用风险
+    ast.BitAnd, ast.BitOr, ast.BitXor,
     ast.And, ast.Or,
     ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Is, ast.IsNot, ast.In, ast.NotIn,
     # 数据结构
@@ -123,7 +133,6 @@ def _strip_comments_and_strings(code: str) -> str:
     防止黑名单子串匹配误报注释中的关键字（如 `# import pandas`）。
     保留字符串内容用于检测，因为某些攻击可能通过字符串拼接构造危险调用。
     """
-    import re
     # 剥离 # 注释（不跨行）
     lines = []
     in_string = False
@@ -170,7 +179,11 @@ def validate_code_blacklist(code: str) -> List[str]:
 
 
 def validate_code_ast(code: str) -> List[str]:
-    """AST 白名单校验。解析代码的抽象语法树，返回不在白名单中的节点类型列表。"""
+    """AST 白名单校验。解析代码的抽象语法树，返回不在白名单中的节点类型列表。
+
+    同时做危险属性名检测（DANGEROUS_ATTRIBUTES），拦截 pd.read_csv / np.load 等
+    模块级文件 I/O 绕过手法。
+    """
     violations = []
     try:
         tree = ast.parse(code)
@@ -183,6 +196,11 @@ def validate_code_ast(code: str) -> List[str]:
             continue
         if type(node) not in AST_WHITELIST:
             violations.append(f"不允许的语法节点: {type(node).__name__}")
+
+    # 危险属性名检测（独立于白名单，精确匹配属性访问，不误伤字符串字面量）
+    visitor = _DangerousAttributeVisitor()
+    visitor.visit(tree)
+    violations.extend(visitor.violations)
 
     return violations
 
@@ -234,6 +252,7 @@ class DataTransformer:
                     'violations': blacklist_violations,
                     'reason': '这些关键字可能用于文件操作、网络访问、动态执行或系统命令，'
                               '在数据转换场景中不需要。如确需使用，请检查数据是否需要预处理。',
+                    'suggestion': '移除这些危险关键字；如确需文件/网络操作，请改用其他工具预处理数据后再导入',
                 },
             )
 
@@ -249,6 +268,7 @@ class DataTransformer:
                     'reason': '数据转换代码仅允许使用赋值、运算、方法调用、条件判断、'
                               '循环和推导式等基本语法。不允许导入模块、定义类、'
                               '异常处理等复杂结构。',
+                    'suggestion': '仅使用赋值、运算、方法调用、条件判断、循环和推导式等基本语法；去掉 import、类定义、异常处理等结构',
                 },
             )
 
@@ -261,10 +281,8 @@ class DataTransformer:
         安全措施：
         - 仅暴露安全的内置函数
         - 设置递归深度上限，防止栈溢出
-        - 设置执行超时，防止无限循环（Unix 用 signal，Windows 用 threading）
+        - 设置执行超时，防止无限循环（仅 Unix：signal SIGALRM；Windows 无 SIGALRM 时无超时）
         """
-        import sys
-
         local_vars = {'df': df.copy(), 'pd': pd, 'np': np}
         # 安全沙箱：仅暴露安全的内置函数，禁止 open/exec/eval/__import__ 等
         safe_builtins = {
@@ -293,7 +311,6 @@ class DataTransformer:
         use_signal = False
         old_handler = None
         try:
-            import signal
             if hasattr(signal, 'SIGALRM'):
                 use_signal = True
                 old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
@@ -302,18 +319,23 @@ class DataTransformer:
             pass
 
         try:
-            exec(code, global_vars, local_vars)
+            # P2-print 修复：把 transform 代码里的 print 重定向到 stderr，
+            # 避免污染 cli.py 末尾输出到 stdout 的 JSON 契约。
+            with contextlib.redirect_stdout(sys.stderr):
+                exec(code, global_vars, local_vars)
         except TimeoutError:
             raise TransformError(
                 f"转换代码执行超时（超过 {self.timeout} 秒），可能存在无限循环",
                 ErrorCode.TRANSFORM_EXEC_ERROR,
-                details={'code': code, 'timeout': self.timeout},
+                details={'code': code, 'timeout': self.timeout,
+                         'suggestion': '检查代码是否含死循环或过重计算；如需更复杂处理，请在本地用 pandas 完成后再导入'},
             )
         except Exception as e:
             raise TransformError(
                 f"转换代码执行失败: {e}",
                 ErrorCode.TRANSFORM_EXEC_ERROR,
-                details={'code': code, 'error': str(e)},
+                details={'code': code, 'error': str(e),
+                         'suggestion': '根据报错信息修正转换代码；可先用 print(df.columns) 或 print(df.head()) 检查列名与数据类型'},
             )
         finally:
             # 恢复递归深度
@@ -347,25 +369,3 @@ class DataTransformer:
             )
 
         return result
-
-    @staticmethod
-    def get_chart_input_spec(chart_type: str) -> str:
-        return CHART_INPUT_SPEC.get(chart_type, "无特定格式要求")
-
-    @staticmethod
-    def get_all_chart_input_specs() -> Dict[str, str]:
-        return CHART_INPUT_SPEC.copy()
-
-    @staticmethod
-    def validate_code(code: str) -> Dict[str, list]:
-        """校验代码安全性，返回校验结果（不执行代码）。
-
-        用于在执行前向用户展示校验结果，辅助用户决策。
-
-        Returns:
-            {'blacklist_violations': [...], 'ast_violations': [...]}
-        """
-        return {
-            'blacklist_violations': validate_code_blacklist(code),
-            'ast_violations': validate_code_ast(code),
-        }

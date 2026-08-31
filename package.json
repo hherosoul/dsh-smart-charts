@@ -1,6 +1,6 @@
 {
   "name": "dsh-smart-charts",
-  "version": "6.0.1",
+  "version": "8.0.1",
   "description": "Smart Charts skill for DeepSeek Harness — generates interactive ECharts visualizations from CSV/Excel/JSON data.",
   "type": "module",
   "main": "lib/index.mjs",
