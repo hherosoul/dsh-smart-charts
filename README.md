@@ -32,17 +32,7 @@ DeepSeek Harness 的 **Smart Charts** skill 插件。
 
 ## 安装
 
-### 渠道 A：npm（推荐，预编译免 allowBuilds）
-
-npm 包地址：<https://www.npmjs.com/package/dsh-smart-charts>
-
-```bash
-dsh plugin --profile web add dsh-smart-charts
-```
-
-装的是预编译产物，无需任何构建权限。
-
-### 渠道 B：GitHub 直装（纯 TS 源码）
+### GitHub 直装（纯 TS 源码）
 
 ```bash
 dsh plugin --profile web add github:hherosoul/dsh-smart-charts
@@ -63,7 +53,7 @@ dsh plugin --profile web add github:hherosoul/dsh-smart-charts
 
 > 放行 `allowBuilds` 等于授权该包在安装阶段执行代码，请只对你信任的源码放行，并建议固定 commit：`github:hherosoul/dsh-smart-charts#<sha>`。
 
-### 渠道 C：本地 tarball
+### 本地 tarball
 
 ```bash
 dsh plugin --profile web add ./dsh-smart-charts-8.0.1.tgz
